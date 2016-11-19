@@ -37,10 +37,13 @@ mean_lane_middle = int(capture_width/2)
 # Set GPIO Pins for stepper
 gpio.setmode(gpio.BCM)
 gpio.setwarnings(False)
-gpio.setup(23, gpio.OUT)
-gpio.setup(24, gpio.OUT)
-gpio.setup(25, gpio.OUT)
-gpio.output(25, True)
+gpio_pulse = 13
+gpio_direction = 19
+gpio_enable = 26
+gpio.setup(gpio_pulse, gpio.OUT) # Pulse
+gpio.setup(gpio_direction, gpio.OUT) # Direction
+gpio.setup(gpio_enable, gpio.OUT) # Enable
+gpio.output(gpio_enable, True)
 
 # Set PID Values for error loop
 error = [0]
@@ -48,6 +51,15 @@ error_time = [timer()]
 Kp = input('Kp :: ')
 Ki = input('Ki :: ')
 Kd = input('Kd :: ')
+
+# Define Exit Procedure
+def exit_handler():
+    cv2.destroyAllWindows()
+    gpio.output(gpio_pulse,False)
+    gpio.output(gpio_direction,False)
+    gpio.output(gpio_enable,False)
+    gpio.cleanup()
+    print "Lane Detection Script Ending"
  
 # allow the camera to warmup
 time.sleep(2)
@@ -232,15 +244,15 @@ for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=
     if steps_to_take !=0:
         # Set Direction
         if steps_to_take>0:
-            gpio.output(23, True)
+            gpio.output(gpio_direction, True)
         else:
-            gpio.output(23, False)
+            gpio.output(gpio_direction, False)
             
         # Pulse Steps        
         while StepCounter<abs(steps_to_take):
-            gpio.output(24, True)
+            gpio.output(gpio_pulse, True)
 	    time.sleep(.00015)
-	    gpio.output(24, False)
+	    gpio.output(gpio_pulse, False)
 	    time.sleep(.0005)
 	    StepCounter +=1
 	    
@@ -276,4 +288,4 @@ for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=
     # clear the stream in preparation for the next frame
     rawCapture.truncate(0)
 
-cv2.destroyAllWindows()
+atexit.register(exit_handler)
