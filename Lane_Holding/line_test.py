@@ -10,13 +10,14 @@ import sys
 import RPi.GPIO as gpio
 import atexit
 
-cap = cv2.VideoCapture('/home/pi/Code/Lane_Holding/test_videos/testVideo20161113151531.h264')
+cap = cv2.VideoCapture('/home/pi/Code/Lane_Holding/test_videos/testVideo20161113151630.h264')
 ret, frame = cap.read()
 capture_height,capture_width,channels = frame.shape
+print frame.shape
 
 ### initialize the camera and grab a reference to the raw camera capture
-##capture_width = 480
-##capture_height = 360
+##capture_width =360
+##capture_height = 240
 ##camera = PiCamera()
 ##camera.resolution = (capture_width, capture_height)
 ##camera.framerate = 32
@@ -30,24 +31,25 @@ capture_height,capture_width,channels = frame.shape
 hood_range_perc = 0.20
 hood_range_update_perc = 0.01
 horizon_range_perc = 0.05
-min_line_length_perc = 0.10
+min_line_length_perc = 0.375
+upper_frame_row = capture_height*3/12
 horizon_row = capture_height*1/12
-hood_row = capture_height*4/7
-height = hood_row-horizon_row
+hood_row = capture_height*3/7
+height = hood_row-upper_frame_row
 right_line_hood_range = [capture_width/2,capture_width]
 left_line_hood_range = [0,capture_width/2]
 horizon_range = [capture_width/2*(1-horizon_range_perc),capture_width/2*(1+horizon_range_perc)]
-lane_width = capture_width*7/8
+lane_width = capture_width*19/32
 lane_middle = [capture_width/2]
 mean_lane_middle = int(capture_width/2)
 
 # Set GPIO Pins for stepper
-gpio.setmode(gpio.BCM)
-gpio.setwarnings(False)
-gpio.setup(23, gpio.OUT)
-gpio.setup(24, gpio.OUT)
-gpio.setup(25, gpio.OUT)
-gpio.output(25, True)
+##gpio.setmode(gpio.BCM)
+##gpio.setwarnings(False)
+##gpio.setup(23, gpio.OUT)
+##gpio.setup(24, gpio.OUT)
+##gpio.setup(25, gpio.OUT)
+##gpio.output(25, True)
 
 # Set PID Values for error loop
 error = [0]
@@ -66,7 +68,7 @@ while(cap.isOpened()):
     img = frame
 
     # Clip image outside of road
-    trunc = img[horizon_row:hood_row,0:capture_width]
+    trunc = img[upper_frame_row:hood_row,0:capture_width]
 
     # Convert BGR to Gray
     gray = cv2.cvtColor(trunc,cv2.COLOR_BGR2GRAY)
@@ -75,7 +77,9 @@ while(cap.isOpened()):
     equ = cv2.equalizeHist(gray)
 
     # Threshold for equalized image
-    ret,thresh = cv2.threshold(equ,251,255,cv2.THRESH_BINARY)
+    ret,thresh = cv2.threshold(equ,250,255,cv2.THRESH_BINARY)
+
+    cv2.imshow('gray',thresh)
 
     # Bitwise-AND mask and original image
     resw = cv2.bitwise_and(trunc,trunc, mask= thresh)
@@ -85,16 +89,23 @@ while(cap.isOpened()):
 
     # Perform Hough Line Detection
     lines = cv2.HoughLinesP(edges,1,np.pi/180,\
-            int(height*min_line_length_perc),\
+            int(height*min_line_length_perc/3),\
             minLineLength=int(height*min_line_length_perc),\
-            maxLineGap=height)
+            maxLineGap=height*.2)
     lines_mat = np.matrix(lines,'float')
+##
+##    if lines_mat.size>1:
+##        for line in lines:
+##            x1,y1,x2,y2 = line[0]
+##            cv2.line(img,(x1,upper_frame_row+y1),(x2,upper_frame_row+y2),(0,255,0),2)
+        
+    cv2.imshow('edges',edges)
     
     if lines_mat.size>1:
 
         # Calculate slope, hood, and horizon intercept for each line
         slope = np.divide(np.subtract(lines_mat[:,3],lines_mat[:,1]),np.subtract(lines_mat[:,2],lines_mat[:,0]))
-        b = np.subtract(lines_mat[:,1],np.multiply(slope,lines_mat[:,0]))
+        b = np.subtract(lines_mat[:,1],np.multiply(slope,lines_mat[:,0]))+(upper_frame_row-horizon_row)
         hood_col = np.divide(np.subtract(np.subtract(hood_row,horizon_row),b),slope)
         horizon_col = np.divide(-b,slope)
 
@@ -109,14 +120,6 @@ while(cap.isOpened()):
         left_lines = np.logical_and(left_lines,horizon_col>horizon_range[0])
         left_lines = np.logical_and(left_lines,horizon_col<horizon_range[1])
         left_lines = np.logical_and(left_lines,slope<0)
-
-        cv2.line(img,(0,hood_row),(capture_width,hood_row),(0,0,255),1)
-        cv2.line(img,(0,horizon_row),(capture_width,horizon_row),(0,0,255),1)
-        cv2.line(img,(int(left_line_hood_range[0]),0),(int(left_line_hood_range[0]),capture_height),(255,0,0),2)
-        cv2.line(img,(int(left_line_hood_range[0]),0),(int(left_line_hood_range[0]),capture_height),(255,0,0),2)
-        cv2.line(img,(int(left_line_hood_range[1]),0),(int(left_line_hood_range[1]),capture_height),(255,0,0),2)
-        cv2.line(img,(int(right_line_hood_range[0]),0),(int(right_line_hood_range[0]),capture_height),(255,0,0),2)
-        cv2.line(img,(int(right_line_hood_range[1]),0),(int(right_line_hood_range[1]),capture_height),(255,0,0),2)
 
         if any((any(right_lines),any(left_lines))):
 
@@ -157,8 +160,8 @@ while(cap.isOpened()):
                 mean_lane_middle = int(np.mean(lane_middle))
 
                 # Draw lines on image for left and right lines
-                cv2.line(img,(lines_mat[left_row_idx,0],lines_mat[left_row_idx,1]+horizon_row),(lines_mat[left_row_idx,2],lines_mat[left_row_idx,3]+horizon_row),(0,0,255),2)
-                cv2.line(img,(lines_mat[right_row_idx,0],lines_mat[right_row_idx,1]+horizon_row),(lines_mat[right_row_idx,2],lines_mat[right_row_idx,3]+horizon_row),(0,255,0),2)
+                cv2.line(img,(lines_mat[left_row_idx,0],lines_mat[left_row_idx,1]+upper_frame_row),(lines_mat[left_row_idx,2],lines_mat[left_row_idx,3]+upper_frame_row),(0,0,255),2)
+                cv2.line(img,(lines_mat[right_row_idx,0],lines_mat[right_row_idx,1]+upper_frame_row),(lines_mat[right_row_idx,2],lines_mat[right_row_idx,3]+upper_frame_row),(0,255,0),2)
             
             elif any(right_lines):
 
@@ -178,7 +181,7 @@ while(cap.isOpened()):
                 mean_lane_middle = int(np.mean(lane_middle))
                 
                 # Draw line for on image right line
-                cv2.line(img,(lines_mat[right_row_idx,0],lines_mat[right_row_idx,1]+horizon_row),(lines_mat[right_row_idx,2],lines_mat[right_row_idx,3]+horizon_row),(0,255,0),2)
+                cv2.line(img,(lines_mat[right_row_idx,0],lines_mat[right_row_idx,1]+upper_frame_row),(lines_mat[right_row_idx,2],lines_mat[right_row_idx,3]+upper_frame_row),(0,255,0),2)
 
 
             elif any(left_lines):
@@ -198,7 +201,7 @@ while(cap.isOpened()):
                 mean_lane_middle = int(np.mean(lane_middle))
 
                 # Draw line for on image left line
-                cv2.line(img,(lines_mat[left_row_idx,0],lines_mat[left_row_idx,1]+horizon_row),(lines_mat[left_row_idx,2],lines_mat[left_row_idx,3]+horizon_row),(0,0,255),2)
+                cv2.line(img,(lines_mat[left_row_idx,0],lines_mat[left_row_idx,1]+upper_frame_row),(lines_mat[left_row_idx,2],lines_mat[left_row_idx,3]+upper_frame_row),(0,0,255),2)
 
             # Determine number of stepper motor steps to take
             error = np.append([error],mean_lane_middle-capture_width/2)
@@ -227,6 +230,8 @@ while(cap.isOpened()):
             # Hold wheel position
             steps_to_take = 0
 
+    else:
+        steps_to_take = 0
 ##    StepCounter = 0
 ##    # Drive stepper motor
 ##    if steps_to_take !=0:
@@ -255,6 +260,15 @@ while(cap.isOpened()):
     print 'Steps to Take :: ',steps_to_take
     print 'Lane Middle :: ', mean_lane_middle
     print 'Frame Rate :: ',1/(end - start)
+
+    cv2.line(img,(0,hood_row),(capture_width,hood_row),(0,0,255),1)
+    cv2.line(img,(0,horizon_row),(capture_width,horizon_row),(0,0,255),1)
+    cv2.line(img,(0,upper_frame_row),(capture_width,upper_frame_row),(0,0,255),1)
+    cv2.line(img,(int(left_line_hood_range[0]),0),(int(left_line_hood_range[0]),capture_height),(255,0,0),2)
+    cv2.line(img,(int(left_line_hood_range[0]),0),(int(left_line_hood_range[0]),capture_height),(255,0,0),2)
+    cv2.line(img,(int(left_line_hood_range[1]),0),(int(left_line_hood_range[1]),capture_height),(255,0,0),2)
+    cv2.line(img,(int(right_line_hood_range[0]),0),(int(right_line_hood_range[0]),capture_height),(255,0,0),2)
+    cv2.line(img,(int(right_line_hood_range[1]),0),(int(right_line_hood_range[1]),capture_height),(255,0,0),2)
 
     # Draw line on image for correction amount, blue for right, white for left
     if (mean_lane_middle-capture_width/2)<0:
