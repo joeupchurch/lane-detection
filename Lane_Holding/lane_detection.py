@@ -35,7 +35,7 @@ right_line_hood_range = [capture_width/2,capture_width]
 left_line_hood_range = [0,capture_width/2]
 horizon_range = [capture_width/2*(1-horizon_range_perc),capture_width/2*(1+horizon_range_perc)]
 lane_width = capture_width*19/32
-lane_middle = [capture_width/2]
+lane_middle = capture_width/2
 mean_lane_middle = int(capture_width/2)
 
 # Set GPIO Pins for stepper
@@ -62,7 +62,7 @@ def exit_handler():
     print "Lane Detection Script Ending"
  
 # allow the camera to warmup
-time.sleep(0.001)
+time.sleep(0.1)
 
 for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=True):
 
