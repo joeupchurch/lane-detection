@@ -11,27 +11,27 @@ import datetime
 # initialize the camera and grab a reference to the raw camera capture
 camera = PiCamera()
 height = 240
-width = 360
+width = 320
 camera.resolution = (width, height)
-framerate = 12
+framerate = 32
 camera.framerate = framerate
 
 # Set Camera Settings
-camera.sharpness = 0
-camera.contrast = 0
-camera.brightness = 50
-camera.saturation = 0
-camera.ISO = 0
-camera.video_stabilization = False
-camera.exposure_compensation = 0
-camera.exposure_mode = 'auto'
-camera.meter_mode = 'average'
-camera.awb_mode = 'auto'
-camera.image_effect = 'none'
-camera.color_effects = None
+##camera.sharpness = 0
+##camera.contrast = 0
+##camera.brightness = 50
+##camera.saturation = 0
+##camera.ISO = 0
+##camera.video_stabilization = False
+##camera.exposure_compensation = 0
+##camera.exposure_mode = 'auto'
+##camera.meter_mode = 'average'
+##camera.awb_mode = 'auto'
+##camera.image_effect = 'none'
+##camera.color_effects = None
 camera.rotation = 180
-camera.hflip = False
-camera.vflip = False
+##camera.hflip = False
+##camera.vflip = False
 camera.crop = (0.0, 0.0, 1.0, 1.0)
 
 rawCapture = PiRGBArray(camera, size=(width, height))
@@ -39,9 +39,9 @@ rawCapture = PiRGBArray(camera, size=(width, height))
 # allow the camera to warmup
 time.sleep(0.1)
 
+start = timer()
 # capture frames from the camera
 for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=True):
-        start = timer()
 	# grab the raw NumPy array representing the image, then initialize the timestamp
 	# and occupied/unoccupied text
 	image = frame.array
@@ -57,6 +57,7 @@ for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=
 
         end = timer()
         print 'Frame Rate :: ',1/(end-start)
+        start = timer()
 	# if the `q` key was pressed, break from the loop
 	if key == ord("q"):
 		break
