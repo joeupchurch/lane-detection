@@ -9,8 +9,10 @@ import time
 import sys
 import RPi.GPIO as gpio
 import atexit
+from imutils.video.pivideostream import PiVideoStream
+from threading import Thread
 
-cap = cv2.VideoCapture('/home/pi/Code/Lane_Holding/test_videos/testVideo20161113151630.h264')
+cap = cv2.VideoCapture('/home/pi/Code/Lane_Holding/testVideo20173278355.h264')
 ret, frame = cap.read()
 capture_height,capture_width,channels = frame.shape
 print frame.shape
@@ -28,269 +30,443 @@ print frame.shape
 ##time.sleep(2)
 
 # Set initial values for lane, line, and camera parameters
-hood_range_perc = 0.20
-hood_range_update_perc = 0.01
-horizon_range_perc = 0.05
-min_line_length_perc = 0.375
-upper_frame_row = capture_height*3/12
-horizon_row = capture_height*1/12
-hood_row = capture_height*3/7
+hood_range_perc = 0.10
+hood_range_update_perc = 0.02
+horizon_range_perc = 0.125
+min_line_length_perc = 0.5
+
+upper_frame_row = capture_height*3/12#3/12
+horizon_row = capture_height*11/64
+hood_row = capture_height*5/12#16/28#3/7
+lane_width_init = int(172)
+upper_frame_width_init = int(57)
+
+mean_lane_width = []
+mean_upper_frame_width = []
+
+lane_width = lane_width_init
+upper_frame_width = upper_frame_width_init
+
 height = hood_row-upper_frame_row
-right_line_hood_range = [capture_width/2,capture_width]
-left_line_hood_range = [0,capture_width/2]
 horizon_range = [capture_width/2*(1-horizon_range_perc),capture_width/2*(1+horizon_range_perc)]
-lane_width = capture_width*19/32
+
 lane_middle = [capture_width/2]
 mean_lane_middle = int(capture_width/2)
+hood_middle = int(capture_width/2)
+right_line_hood_range = [int(mean_lane_middle+lane_width/2\
+                         -hood_range_perc/2*capture_width),\
+                         int(mean_lane_middle+lane_width/2\
+                         +hood_range_perc/2*capture_width)]
+left_line_hood_range = [int(mean_lane_middle-lane_width/2\
+                         -hood_range_perc/2*capture_width),\
+                         int(mean_lane_middle-lane_width/2\
+                         +hood_range_perc/2*capture_width)]
+
+add_width = int(height*5/3-hood_range_perc/2*capture_width)
+max_steps_to_take = 30
+max_frame_rate = float(30)
+frame_number = 0
 
 # Set GPIO Pins for stepper
-##gpio.setmode(gpio.BCM)
-##gpio.setwarnings(False)
-##gpio.setup(23, gpio.OUT)
-##gpio.setup(24, gpio.OUT)
-##gpio.setup(25, gpio.OUT)
-##gpio.output(25, True)
+gpio.setmode(gpio.BCM)
+gpio.setwarnings(False)
+gpio.setup(13, gpio.OUT)
+gpio.setup(19, gpio.OUT)
+gpio.setup(26, gpio.OUT)
+gpio.output(26, True)
+
+# Define Exit Procedure
+def exit_handler():
+    cv2.destroyAllWindows()
+    vs.stop()
+    gpio.output(gpio_pulse,False)
+    gpio.output(gpio_direction,False)
+    gpio.cleanup()
+    print 'Lane Detection Script Ending'
+
+def stepperFunc(steps_to_take):
+    StepCounter = 0
+    # Drive stepper motor
+    if steps_to_take>0:
+        gpio.output(19, True)
+    else:
+        gpio.output(19, False)
+    if abs(steps_to_take)>max_steps_to_take:
+        steps_to_take = max_steps_to_take
+    while StepCounter<abs(steps_to_take):
+        gpio.output(13, True)
+        time.sleep(.1)
+        gpio.output(13, False)
+        time.sleep(.1)
+        StepCounter +=1 
 
 # Set PID Values for error loop
 error = [0]
-error_time = [timer()]
-Kp = 0.2#input('Kp :: ')
-Ki = 0.1#input('Ki :: ')
-Kd = 0.0#input('Kd :: ')
+error_time = [float(timer())]
+error_frames = 10
+integral_error =[0]
+Kp = 0.1#input('Kp :: ')
+Ki = 0.5#input('Ki :: ')
+Kd = 0.02#input('Kd :: ')
+
+# Start Timer for Framerate
+start = timer()
 
 while(cap.isOpened()):
+    try:
+        ret, frame = cap.read()
+        start = timer()
+        frame_number += 1
+        print ''
+        print 'Frame :: ',frame_number
+        img = frame
 
-##for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=True):
-    start = timer()
+        right_line_hood_capture_range = right_line_hood_range[:]
+        left_line_hood_capture_range = left_line_hood_range[:]
 
-##    img = frame.array
-    ret, frame = cap.read()
-    img = frame
+        # Limit ranges to capture width
+        if right_line_hood_capture_range[1]>capture_width:
+            right_line_hood_capture_range[1] = capture_width
+        if right_line_hood_capture_range[0]<capture_width/2:
+            right_line_hood_capture_range[0] = capture_width/2
+        if left_line_hood_capture_range[0]<0:
+            left_line_hood_capture_range[0] = 0
+        if left_line_hood_capture_range[1]>capture_width/2:
+            left_line_hood_capture_range[1]=capture_width/2
 
-    # Clip image outside of road
-    trunc = img[upper_frame_row:hood_row,0:capture_width]
+        if right_line_hood_capture_range[1]<right_line_hood_capture_range[0]:
+            right_line_hood_capture_range[0] = int(right_line_hood_capture_range[1]-capture_width*hood_range_perc)
+        if left_line_hood_capture_range[1]<left_line_hood_capture_range[0]:
+            left_line_hood_capture_range[1] = int(left_line_hood_capture_range[0]+capture_width*hood_range_perc)
 
-    # Convert BGR to Gray
-    gray = cv2.cvtColor(trunc,cv2.COLOR_BGR2GRAY)
+        # Clip image outside of road
+        truncl = img[upper_frame_row:hood_row,\
+                     left_line_hood_capture_range[0]:left_line_hood_capture_range[1]+add_width]
+        truncr = img[upper_frame_row:hood_row,\
+                     right_line_hood_capture_range[0]-add_width:right_line_hood_capture_range[1]]
+            
+        # Convert BGR to Gray
+        grayl = cv2.cvtColor(truncl,cv2.COLOR_BGR2GRAY)
+        grayr = cv2.cvtColor(truncr,cv2.COLOR_BGR2GRAY)
+        
+        # Apply histogram equalization to gray image
+        equl = cv2.equalizeHist(grayl)
+        equr = cv2.equalizeHist(grayr)
+        
+        # Threshold for equalized image
+        retl,threshl = cv2.threshold(equl,250,255,cv2.THRESH_BINARY)
+        retr,threshr = cv2.threshold(equr,250,255,cv2.THRESH_BINARY)
 
-    # Apply histogram equalization to gray image
-    equ = cv2.equalizeHist(gray)
+        # Bitwise-AND mask and original image
+        resl = cv2.bitwise_and(truncl,truncl, mask= threshl)
+        resr = cv2.bitwise_and(truncr,truncr, mask= threshr)
 
-    # Threshold for equalized image
-    ret,thresh = cv2.threshold(equ,250,255,cv2.THRESH_BINARY)
+        # Perform Canny Edge Detection
+        edgesl = cv2.Canny(resl,100,200,apertureSize = 3)
+        edgesr = cv2.Canny(resr,100,200,apertureSize = 3)
 
-    cv2.imshow('gray',thresh)
-
-    # Bitwise-AND mask and original image
-    resw = cv2.bitwise_and(trunc,trunc, mask= thresh)
-
-    # Perform Canny Edge Detection
-    edges = cv2.Canny(resw,100,200,apertureSize = 3)
-
-    # Perform Hough Line Detection
-    lines = cv2.HoughLinesP(edges,1,np.pi/180,\
+        # Perform Hough Line Detection
+        linesl = cv2.HoughLinesP(edgesl,1,np.pi/180,\
+                int(height*min_line_length_perc/3),\
+                minLineLength=int(height*min_line_length_perc),\
+                maxLineGap=height*.2)
+        linesr = cv2.HoughLinesP(edgesr,1,np.pi/180,\
             int(height*min_line_length_perc/3),\
             minLineLength=int(height*min_line_length_perc),\
             maxLineGap=height*.2)
-    lines_mat = np.matrix(lines,'float')
-##
-##    if lines_mat.size>1:
-##        for line in lines:
-##            x1,y1,x2,y2 = line[0]
-##            cv2.line(img,(x1,upper_frame_row+y1),(x2,upper_frame_row+y2),(0,255,0),2)
         
-    cv2.imshow('edges',edges)
-    
-    if lines_mat.size>1:
+        lines_matl = np.matrix(linesl,'float')
+        lines_matr = np.matrix(linesr,'float')
 
-        # Calculate slope, hood, and horizon intercept for each line
-        slope = np.divide(np.subtract(lines_mat[:,3],lines_mat[:,1]),np.subtract(lines_mat[:,2],lines_mat[:,0]))
-        b = np.subtract(lines_mat[:,1],np.multiply(slope,lines_mat[:,0]))+(upper_frame_row-horizon_row)
-        hood_col = np.divide(np.subtract(np.subtract(hood_row,horizon_row),b),slope)
-        horizon_col = np.divide(-b,slope)
+        if lines_matl.size>1:
+            for line in linesl:
+                x1,y1,x2,y2 = line[0]
+                cv2.line(img,(x1+left_line_hood_capture_range[0],upper_frame_row+y1),\
+                         (x2+left_line_hood_capture_range[0],upper_frame_row+y2),(255,255,255),2)
 
-        # Parse right lines based on hood/horizon intercepts and slope
-        right_lines = np.logical_and(hood_col>right_line_hood_range[0],hood_col<right_line_hood_range[1])
-        right_lines = np.logical_and(right_lines,horizon_col>horizon_range[0])
-        right_lines = np.logical_and(right_lines,horizon_col<horizon_range[1])
-        right_lines = np.logical_and(right_lines,slope>0)
+        if lines_matr.size>1:
+            for line in linesr:
+                x1,y1,x2,y2 = line[0]
+                cv2.line(img,(x1+right_line_hood_capture_range[0]-add_width,upper_frame_row+y1),\
+                         (x2+right_line_hood_capture_range[0]-add_width,upper_frame_row+y2),(255,255,255),2)
+        
+        if lines_matl.size>1:
+            try:
+                # Calculate slope, hood, and horizon intercept for each line
+                slope = np.divide(np.subtract(lines_matl[:,3],lines_matl[:,1]),\
+                                  np.subtract(lines_matl[:,2],lines_matl[:,0]))
+                b = np.subtract(lines_matl[:,1]+upper_frame_row,np.multiply(slope,\
+                                (lines_matl[:,0]+left_line_hood_capture_range[0])))
+                hood_col = np.divide(np.subtract(upper_frame_row+height,b),slope)
+                horizon_col = np.divide(np.subtract(horizon_row,b),slope)
+                upper_frame_col = np.divide(np.subtract(upper_frame_row,b),slope)
 
-        # Parse left lines based on hood/horizon intercepts and slope
-        left_lines = np.logical_and(hood_col>left_line_hood_range[0],hood_col<left_line_hood_range[1])
-        left_lines = np.logical_and(left_lines,horizon_col>horizon_range[0])
-        left_lines = np.logical_and(left_lines,horizon_col<horizon_range[1])
-        left_lines = np.logical_and(left_lines,slope<0)
+                # Parse left lines based on hood/horizon intercepts and slope
+                left_lines = np.logical_and(hood_col>left_line_hood_range[0],hood_col<left_line_hood_range[1])
+                left_lines = np.logical_and(left_lines,horizon_col>horizon_range[0])
+                left_lines = np.logical_and(left_lines,horizon_col<horizon_range[1])
+                left_lines = np.logical_and(left_lines,slope<0)
 
+                if any(left_lines):
+                    # Parse left lines based on max slope then maximum hood intercept
+                    left_line = np.logical_and(left_lines,hood_col==np.max(hood_col[left_lines]))
+                    left_line = np.logical_and(left_line,slope==np.min(slope[left_line]))
+
+                    # Pull left line hood/horizon intercept and lines_mat index
+                    left_line_hood = hood_col[left_line]
+                    left_line_horizon = horizon_col[left_line]
+                    left_row_idx,left_col_idx = np.where(left_line)
+                    left_line_upper_frame = upper_frame_col[left_line]
+            except:
+                left_lines = []
+        else:
+            left_lines = []
+
+        if lines_matr.size>1:
+            try:
+                # Calculate slope, hood, and horizon intercept for each line
+                slope = np.divide(np.subtract(lines_matr[:,3],lines_matr[:,1]),\
+                                  np.subtract(lines_matr[:,2],lines_matr[:,0]))
+                b = np.subtract(lines_matr[:,1]+upper_frame_row,np.multiply(slope,\
+                                (lines_matr[:,0]+right_line_hood_capture_range[0]-add_width)))
+                hood_col = np.divide(np.subtract(upper_frame_row+height,b),slope)
+                horizon_col = np.divide(np.subtract(horizon_row,b),slope)
+                upper_frame_col = np.divide(np.subtract(upper_frame_row,b),slope)
+
+                # Parse right lines based on hood/horizon intercepts and slope
+                right_lines = np.logical_and(hood_col>right_line_hood_range[0],hood_col<right_line_hood_range[1])
+                right_lines = np.logical_and(right_lines,horizon_col>horizon_range[0])
+                right_lines = np.logical_and(right_lines,horizon_col<horizon_range[1])
+                right_lines = np.logical_and(right_lines,slope>0)
+
+                if any(right_lines):
+                    # Parse right lines on max slope then minimum hood intercept
+                    right_line = np.logical_and(right_lines,hood_col==np.min(hood_col[right_lines]))
+                    right_line = np.logical_and(right_line,slope==np.max(abs(slope[right_line])))
+
+                    # Pull right line hood/horizon intercept and lines_mat index
+                    right_line_hood = hood_col[right_line]
+                    right_line_horizon = horizon_col[right_line]
+                    right_row_idx,right_col_idx = np.where(right_line)
+                    right_line_upper_frame = upper_frame_col[right_line]
+            except:
+                right_lines = []
+        else:
+            right_lines = []
+            
         if any((any(right_lines),any(left_lines))):
 
-            if any(right_lines):
-                # Parse right lines based on max slope then minimum hood intercept
-                right_line = np.logical_and(right_lines,slope==np.max(slope[right_lines]))
-                right_line = np.logical_and(right_line,hood_col==np.min(hood_col[right_line]))
-
-                # Pull right line hood/horizon intercept and lines_mat index
-                right_line_hood = hood_col[right_line]
-                right_line_horizon = horizon_col[right_line]
-                right_row_idx,right_col_idx = np.where(right_line)
-                
-            if any(left_lines):
-                # Parse left lines based on max slope then maximum hood intercept
-                left_line = np.logical_and(left_lines,slope==np.min(slope[left_lines]))
-                left_line = np.logical_and(left_line,hood_col==np.max(hood_col[left_line]))
-
-                # Pull left line hood/horizon intercept and lines_mat index
-                left_line_hood = hood_col[left_line]
-                left_line_horizon = horizon_col[left_line]
-                left_row_idx,left_col_idx = np.where(left_line)
+            line_counter=0
 
             # Both lines detected
             if all((any(right_lines),any(left_lines))):
-                # Update right line hood search regions based on latest line data
-                right_line_hood_range = [right_line_hood-capture_width*hood_range_perc/2,right_line_hood+capture_width*hood_range_perc/2]
-
-                # Update left line hood search regions based on latest line data
-                left_line_hood_range = [left_line_hood-capture_width*hood_range_perc/2,left_line_hood+capture_width*hood_range_perc/2]
-
-                # Calculate middle of lane from difference of hood intercepts
-                lane_middle = np.append([lane_middle],\
-                              int(np.mean([left_line_hood,right_line_hood])))
-                # Consider only last five frames
-                lane_middle = lane_middle[-5:]
-                # Take mean of lane middles
-                mean_lane_middle = int(np.mean(lane_middle))
+                
+                # Calculate middle of upper frame and middle of hood
+                upper_frame_middle = np.mean([left_line_upper_frame,right_line_upper_frame])
+                hood_middle = np.mean([left_line_hood,right_line_hood])
 
                 # Draw lines on image for left and right lines
-                cv2.line(img,(lines_mat[left_row_idx,0],lines_mat[left_row_idx,1]+upper_frame_row),(lines_mat[left_row_idx,2],lines_mat[left_row_idx,3]+upper_frame_row),(0,0,255),2)
-                cv2.line(img,(lines_mat[right_row_idx,0],lines_mat[right_row_idx,1]+upper_frame_row),(lines_mat[right_row_idx,2],lines_mat[right_row_idx,3]+upper_frame_row),(0,255,0),2)
-            
-            elif any(right_lines):
-
+                cv2.line(img,(lines_matl[left_row_idx,0]+left_line_hood_capture_range[0],\
+                              lines_matl[left_row_idx,1]+upper_frame_row),\
+                         (lines_matl[left_row_idx,2]+left_line_hood_capture_range[0],\
+                          lines_matl[left_row_idx,3]+upper_frame_row),(0,0,255),2)
+                cv2.line(img,(lines_matr[right_row_idx,0]+right_line_hood_capture_range[0]-add_width,\
+                              lines_matr[right_row_idx,1]+upper_frame_row),\
+                         (lines_matr[right_row_idx,2]+right_line_hood_capture_range[0]-add_width,\
+                          lines_matr[right_row_idx,3]+upper_frame_row),(0,255,0),2)
+                
                 # Update right line hood search regions based on latest line data
-                right_line_hood_range = [right_line_hood-capture_width*hood_range_perc/2,right_line_hood+capture_width*hood_range_perc/2]
+                right_line_hood_range = [int(right_line_hood-capture_width*hood_range_perc/2),\
+                                         int(right_line_hood+capture_width*hood_range_perc/2)]
+
+                # Update left line hood search regions based on latest line data
+                left_line_hood_range = [int(left_line_hood-capture_width*hood_range_perc/2),\
+                                        int(left_line_hood+capture_width*hood_range_perc/2)]
+
+                # Update lane width and upper frame width
+                lane_width = int(right_line_hood-left_line_hood)
+                upper_frame_width = int(right_line_upper_frame-left_line_upper_frame)
+
+                # Calculate mean lane, upper_frame widths
+                mean_lane_width = np.append([mean_lane_width],lane_width)
+                mean_upper_frame_width = np.append([mean_upper_frame_width],upper_frame_width)
+
+                # Calculate middle of lane from difference of upper frame intercepts
+                lane_middle = np.append([lane_middle],int(upper_frame_middle))
                 
-                # Expand left line hood search regions based on right line if no left lines detected
-                left_line_hood_range[0] = right_line_hood_range[0]-lane_width
-                left_line_hood_range[1] = right_line_hood_range[1]-lane_width
+                # Consider only last frames
+                lane_middle = lane_middle[-1:]
                 
-                # Calculate middle of lane from difference of hood intercepts
-                lane_middle = np.append([lane_middle],\
-                              int(right_line_hood-lane_width/2))
-                # Consider only last five frames
-                lane_middle = lane_middle[-5:]
                 # Take mean of lane middles
                 mean_lane_middle = int(np.mean(lane_middle))
+
+            elif any(right_lines):
                 
                 # Draw line for on image right line
-                cv2.line(img,(lines_mat[right_row_idx,0],lines_mat[right_row_idx,1]+upper_frame_row),(lines_mat[right_row_idx,2],lines_mat[right_row_idx,3]+upper_frame_row),(0,255,0),2)
+                cv2.line(img,(lines_matr[right_row_idx,0]+right_line_hood_capture_range[0]-add_width,\
+                              lines_matr[right_row_idx,1]+upper_frame_row),\
+                         (lines_matr[right_row_idx,2]+right_line_hood_capture_range[0]-add_width,\
+                          lines_matr[right_row_idx,3]+upper_frame_row),(0,255,0),2)
 
+                # Calculate middle of upper frame and middle of hood
+                upper_frame_middle = right_line_upper_frame-upper_frame_width/2
+                hood_middle = right_line_hood-lane_width/2
 
-            elif any(left_lines):
-                # Update left line hood search regions based on latest line data
-                left_line_hood_range = [left_line_hood-capture_width*hood_range_perc/2,left_line_hood+capture_width*hood_range_perc/2]
+                # Update right line hood search regions based on latest line data
+                right_line_hood_range = [int(right_line_hood-capture_width*hood_range_perc/2),\
+                                         int(right_line_hood+capture_width*hood_range_perc/2)]
                 
-                # Expand right line hood search regions based on left line if no right lines detected
-                right_line_hood_range[0] = left_line_hood_range[0]+lane_width
-                right_line_hood_range[1] = left_line_hood_range[1]+lane_width
+                # Expand left line hood search regions based on right line if no left lines detected
+                left_line_hood_range[0] = int(right_line_hood_range[0]-lane_width)
+                left_line_hood_range[1] = int(right_line_hood_range[1]-lane_width)
                 
-                # Calculate middle of lane from difference of hood intercepts
-                lane_middle = np.append([lane_middle],\
-                              int(left_line_hood+lane_width/2))
-                # Consider only last five frames
-                lane_middle = lane_middle[-5:]
+                # Calculate middle of lane from difference of upper frame intercepts
+                lane_middle = np.append([lane_middle],int(upper_frame_middle))
+                
+                # Consider only last frame
+                lane_middle = lane_middle[-1:]
+                
                 # Take mean of lane middles
                 mean_lane_middle = int(np.mean(lane_middle))
 
+            elif any(left_lines):
+                
                 # Draw line for on image left line
-                cv2.line(img,(lines_mat[left_row_idx,0],lines_mat[left_row_idx,1]+upper_frame_row),(lines_mat[left_row_idx,2],lines_mat[left_row_idx,3]+upper_frame_row),(0,0,255),2)
+                cv2.line(img,(lines_matl[left_row_idx,0]+left_line_hood_capture_range[0],\
+                              lines_matl[left_row_idx,1]+upper_frame_row),\
+                         (lines_matl[left_row_idx,2]+left_line_hood_capture_range[0],\
+                          lines_matl[left_row_idx,3]+upper_frame_row),(0,0,255),2)
 
-            # Determine number of stepper motor steps to take
+                # Calculate middle of upper frame and middle of hood
+                upper_frame_middle = left_line_upper_frame+upper_frame_width/2
+                hood_middle = left_line_hood+lane_width/2
+                
+                # Update left line hood search regions based on latest line data
+                left_line_hood_range = [int(left_line_hood-capture_width*hood_range_perc/2),\
+                                        int(left_line_hood+capture_width*hood_range_perc/2)]
+                
+                # Expand right line hood search regions based on left line if no right lines detected
+                right_line_hood_range[0] = int(left_line_hood_range[0]+lane_width)
+                right_line_hood_range[1] = int(left_line_hood_range[1]+lane_width)
+                
+                # Calculate middle of lane from difference of upper frame intercepts
+                lane_middle = np.append([lane_middle],int(upper_frame_middle))
+                # Consider only last frame
+                lane_middle = lane_middle[-1:]
+                # Take mean of lane middles
+                mean_lane_middle = int(np.mean(lane_middle))
+
+            # Calculate Error and Error Times
             error = np.append([error],mean_lane_middle-capture_width/2)
             error = error[-2:]
-            error_time = np.append([error_time],timer())
+            error_time = np.append([error_time],float(timer()))
             error_time = error_time[-2:]
-            steps_to_take = int(Kp*error[-1]\
-                +Ki*np.mean(error)*(error_time[1]-error_time[0])\
-                +Kd*(error[1]-error[0])/(error_time[1]-error_time[0]))
 
+            integral_error = np.append([integral_error],np.mean(error)*(error_time[-1]-error_time[0]))
+            integral_error = integral_error[-error_frames:]
+            
+            # Determine number of stepper motor steps to take
+            steps_to_take = int(round(Kp*error[-1]\
+                +Ki*np.sum(integral_error)\
+                +Kd*(error[-1]-error[0])/(error_time[-1]-error_time[0])))
+
+            error_text = 'P:%d I:%d D:%d S:%d' %(error[-1],\
+                    np.sum(integral_error),\
+                    (error[1]-error[0])/(error_time[1]-error_time[0]),steps_to_take)
+            cv2.putText(img,error_text,(capture_width/2-60,capture_height-4),cv2.FONT_HERSHEY_PLAIN,1,(255,255,255),1)
+
+            print 'Frame Number :: ',frame_number
+            print 'Error :: ',error
+            print 'P :: ',error[-1]
+            print 'I :: ',np.sum(integral_error)
+            print 'D :: ',(error[1]-error[0])/(error_time[1]-error_time[0])
+            print 'Error Time :: ',(error_time[1]-error_time[0])
+            
         # No lines detected
         else:
             # Update line hood search regions based on last line data
-            right_line_hood_range = [right_line_hood_range[0]-capture_width*hood_range_update_perc/2,right_line_hood_range[1]+capture_width*hood_range_update_perc/2]
-            left_line_hood_range = [left_line_hood_range[0]-capture_width*hood_range_update_perc/2,left_line_hood_range[1]+capture_width*hood_range_update_perc/2]
+            right_line_hood_range = [int(right_line_hood_range[0]-capture_width*hood_range_update_perc/2),\
+                                     int(right_line_hood_range[1]+capture_width*hood_range_update_perc/2)]
+            left_line_hood_range = [int(left_line_hood_range[0]-capture_width*hood_range_update_perc/2),\
+                                    int(left_line_hood_range[1]+capture_width*hood_range_update_perc/2)]
 
-            if right_line_hood_range[1]-right_line_hood_range[0]>capture_width/2:
-                right_line_hood_range[0] = capture_width*1/2
+            if right_line_hood_range[1]>capture_width:
                 right_line_hood_range[1] = capture_width
-
-            if left_line_hood_range[1]-left_line_hood_range[0]>capture_width/2:
+            if right_line_hood_range[0]<capture_width/2:
+                right_line_hood_range[0] = capture_width/2
+            if left_line_hood_range[0]<0:
                 left_line_hood_range[0] = 0
-                left_line_hood_range[1] = capture_width*1/2
-                
+            if left_line_hood_range[1]>capture_width/2:
+                left_line_hood_range[1]=capture_width/2
 
             # Hold wheel position
-            steps_to_take = 0
+            steps_to_take = int(0)
 
-    else:
-        steps_to_take = 0
-##    StepCounter = 0
-##    # Drive stepper motor
-##    if steps_to_take !=0:
-####        for i in range(0, steps_to_take):
-##        if steps_to_take>0:
-##            gpio.output(23, True)
-####                myStepper.oneStep(Adafruit_MotorHAT.FORWARD,  Adafruit_MotorHAT.DOUBLE)
-####                time.sleep(0.005)
-##        else:
-##            gpio.output(23, False)
-####                myStepper.oneStep(Adafruit_MotorHAT.BACKWARD,  Adafruit_MotorHAT.DOUBLE)
-####                time.sleep(0.005)
-##        while StepCounter<abs(steps_to_take):
-##            gpio.output(24, True)
-##	    time.sleep(.00015)
-##	    gpio.output(24, False)
-##	    time.sleep(.0005)
-##	    StepCounter +=1
-			
-    # End timer for frame rate calculation
-    end = timer()
+        if steps_to_take !=0:
+            stepperStart = Thread(target=stepperFunc, args=(steps_to_take,))
+            stepperStart.start()
+       
+        # End timer for frame rate calculation
+        end = float(timer())
 
-    # Display information in terminal
-    print ''
-    print 'Error :: ',error
-    print 'Steps to Take :: ',steps_to_take
-    print 'Lane Middle :: ', mean_lane_middle
-    print 'Frame Rate :: ',1/(end - start)
+        # Calculate frame rate
+        frame_rate = 1/(end - start)
 
-    cv2.line(img,(0,hood_row),(capture_width,hood_row),(0,0,255),1)
-    cv2.line(img,(0,horizon_row),(capture_width,horizon_row),(0,0,255),1)
-    cv2.line(img,(0,upper_frame_row),(capture_width,upper_frame_row),(0,0,255),1)
-    cv2.line(img,(int(left_line_hood_range[0]),0),(int(left_line_hood_range[0]),capture_height),(255,0,0),2)
-    cv2.line(img,(int(left_line_hood_range[0]),0),(int(left_line_hood_range[0]),capture_height),(255,0,0),2)
-    cv2.line(img,(int(left_line_hood_range[1]),0),(int(left_line_hood_range[1]),capture_height),(255,0,0),2)
-    cv2.line(img,(int(right_line_hood_range[0]),0),(int(right_line_hood_range[0]),capture_height),(255,0,0),2)
-    cv2.line(img,(int(right_line_hood_range[1]),0),(int(right_line_hood_range[1]),capture_height),(255,0,0),2)
+        # Pause to not exceed max_frame_rate
+        if frame_rate>max_frame_rate:
+            sleep_time = float(1/max_frame_rate)-float(1/frame_rate)
+            print 'Sleep Time :: ',sleep_time
+            time.sleep(sleep_time)
 
-    # Draw line on image for correction amount, blue for right, white for left
-    if (mean_lane_middle-capture_width/2)<0:
-            cv2.line(img,(capture_width/2,hood_row-5),(mean_lane_middle,hood_row-5),(255,255,255),2)
-    elif(mean_lane_middle-capture_width/2)>0:
-            cv2.line(img,(capture_width/2,hood_row-5),(mean_lane_middle,hood_row-5),(255,0,0),2)
+        # Recalculate frame rate
+        end = float(timer())
+        frame_rate = 1/(end - start)
 
-    cv2.line(img,(mean_lane_middle-lane_width/2,0),(mean_lane_middle-lane_width/2,capture_height),(0,0,255),1)
-    cv2.line(img,(mean_lane_middle+lane_width/2,0),(mean_lane_middle+lane_width/2,capture_height),(0,0,255),1)
+        # Start Timer for Framerate
+        start = float(timer())
 
-    error_text = '%d %d' %(error[-1],steps_to_take)
-    cv2.putText(img,error_text,(capture_width/2-30,capture_height-4),cv2.FONT_HERSHEY_PLAIN,1,(255,255,255),1)
+        # Display information in terminal
 
-    # Display image, break if 'q' pressed
-    cv2.namedWindow('Image',cv2.WINDOW_NORMAL)
-    cv2.imshow('Image',img)
-	
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+        print 'Steps to Take :: ',steps_to_take
+        print 'Frame Rate :: ',frame_rate
+        
+        cv2.line(img,(0,hood_row),(capture_width,hood_row),(0,0,255),1)
+        cv2.line(img,(0,horizon_row),(capture_width,horizon_row),(0,0,255),1)
+        cv2.line(img,(0,upper_frame_row),(capture_width,upper_frame_row),(0,0,255),1)
+        cv2.line(img,(int(left_line_hood_range[0]),upper_frame_row),(int(left_line_hood_range[0]),hood_row),(255,0,0),2)
+        cv2.line(img,(int(left_line_hood_range[1]+add_width),upper_frame_row),(int(left_line_hood_range[1]+add_width),hood_row),(255,0,0),2)
+        cv2.line(img,(int(left_line_hood_range[1]),hood_row-10),(int(left_line_hood_range[1]),hood_row),(255,0,0),2)
+        cv2.line(img,(int(right_line_hood_range[0]),hood_row-10),(int(right_line_hood_range[0]),hood_row),(255,0,0),2)
+        cv2.line(img,(int(right_line_hood_range[0]-add_width),upper_frame_row),(int(right_line_hood_range[0]-add_width),hood_row),(255,0,0),2)
+        cv2.line(img,(int(right_line_hood_range[1]),upper_frame_row),(int(right_line_hood_range[1]),hood_row),(255,0,0),2)
+        cv2.line(img,(capture_width/2-upper_frame_width/2,0),(capture_width/2-upper_frame_width/2,capture_height),(0,0,255),1)
+        cv2.line(img,(capture_width/2+upper_frame_width/2,0),(capture_width/2+upper_frame_width/2,capture_height),(0,0,255),1)
 
-    # clear the stream in preparation for the next frame
-##    rawCapture.truncate(0)
+        # Draw line on image for correction amount, blue for right, white for left
+        if (mean_lane_middle-capture_width/2)<0:
+                cv2.line(img,(capture_width/2,upper_frame_row),(mean_lane_middle,upper_frame_row),(255,255,255),2)
+        elif(mean_lane_middle-capture_width/2)>0:
+                cv2.line(img,(capture_width/2,upper_frame_row),(mean_lane_middle,upper_frame_row),(255,0,0),2)
 
-cv2.destroyAllWindows()
-cap.release()
+        cv2.line(img,(int(hood_middle-lane_width/2),0),(int(hood_middle-lane_width/2),capture_height),(0,0,255),1)
+        cv2.line(img,(int(hood_middle+lane_width/2),0),(int(hood_middle+lane_width/2),capture_height),(0,0,255),1)
+
+        # Display image, break if 'q' pressed
+        cv2.namedWindow('Image',cv2.WINDOW_NORMAL)
+        cv2.imshow('Image',img)
+
+        end = float(timer())
+        print 'Loop Time :: ', end-start
+        cv2.waitKey(0)
+            
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break    
+
+    except:
+        print 'Mean Lane Width :: ', np.mean(mean_lane_width)
+        print 'Mean Upper Frame Width :: ',np.mean(mean_upper_frame_width)
+        cv2.destroyAllWindows()
+        cap.release()
+        gpio.output(26, False)
+        print('Clean')
+
