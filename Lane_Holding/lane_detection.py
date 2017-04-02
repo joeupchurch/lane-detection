@@ -3,35 +3,55 @@ import cv2
 import numpy as np
 from matplotlib import pyplot as plt
 from timeit import default_timer as timer
-from imutils.video.pivideostream import PiVideoStream
-from imutils.video import FPS
 from picamera.array import PiRGBArray
 from picamera import PiCamera
-import argparse
-import imutils
 import time
 import sys
 import RPi.GPIO as gpio
 import atexit
+from imutils.video.pivideostream import PiVideoStream
 from threading import Thread
 
-# Define camera height and width (defaults)
-capture_width = 640
-capture_height = 480
+test_video = 1
 
+if test_video==1:
+    cap = cv2.VideoCapture('/home/pi/Code/Lane_Holding/test_videos/testVideo201732919336.h264')
+    ret, frame = cap.read()
+
+    # Define camera height and width (defaults)
+    capture_height,capture_width,channels = frame.shape
+    print frame.shape
+
+else:
+    # Define camera height and width (defaults)
+    capture_width = 640
+    capture_height = 480
+    
+    # Start Video Stream and warm-up
+    vs = PiVideoStream().start()
+    time.sleep(2.0)
+    
 # Set PID Values for error loop
 error = [0]
 error_time = [float(timer())]
 error_frames = 1
-error_mean_frames = 5
-integral_error =[0]
+error_mean_frames = float(10)
+error_multiplier = 2/(error_mean_frames+1)
 
-Kp = 0.1#input('Kp :: ')
-Ki = 0.5#input('Ki :: ')
-Kd = 0.02#input('Kd :: ')
+Kp = 160/float(capture_width)#input('Kp :: ')
+Ki = 0/float(capture_width)#125#.5#input('Ki :: ')
+Kd = 480/float(capture_width)#input('Kd :: ')
+print 'Kp :: ',Kp
+print 'Ki :: ',Ki
+print 'Kd ;; ',Kd
 
 # Set whether to display image or not
 display_image = 1
+
+# Set frame rate variables
+min_steps_to_take = 0
+max_steps_to_take = 65
+max_frame_rate = float(10)
 
 # Set initial values for lane, line, and camera parameters
 hood_range_perc = 0.10
@@ -47,10 +67,6 @@ lane_width_init = int(758*capture_width/480)
 upper_frame_width_init = int(82*capture_width/480)
 
 slope_factor = 0.025
-
-min_steps_to_take = 3
-max_steps_to_take = 100
-max_frame_rate = float(10)
 
 # Initialize variables
 mean_lane_width = []
@@ -117,32 +133,33 @@ def stepperFunc(steps_to_take):
     if abs(steps_to_take)>max_steps_to_take:
         steps_to_take = max_steps_to_take
     while StepCounter<abs(steps_to_take):
+        time.sleep(.00075)
         gpio.output(13, True)
-        time.sleep(.0005)
+        time.sleep(.00075)
         gpio.output(13, False)
-        time.sleep(.0005)
-        StepCounter +=1 
-
-# Start Video Stream
-vs = PiVideoStream().start()
-time.sleep(2.0)
+        StepCounter +=1
 
 # Start Timer for Framerate
 start = timer()
 
 while True:
     
-    # Grab frame from video stream
-    frame = vs.read()
+    # Grab frame differently if test video
+    if test_video==1:
+        ret, frame = cap.read()
+    else:
+        # Grab frame from video stream
+        frame = vs.read()
 
-    # Start copy here
-    print ' '
     # Index Frame Number
     frame_number+=1
+    print ' '
+    print 'Frame Number :: ',frame_number
 
     # Save frame to img
     img = frame
 
+    # Base initial capture ranges on hood ranges
     right_line_hood_capture_range = right_line_hood_range[:]
     left_line_hood_capture_range = left_line_hood_range[:]
 
@@ -207,11 +224,12 @@ while True:
     linesr = cv2.HoughLinesP(edgesr,1,np.pi/180,\
         int(height*min_line_length_perc/3),\
         minLineLength=int(height*min_line_length_perc),\
-        maxLineGap=height*.2)
+        maxLineGap=height*.5)
     
     lines_matl = np.matrix(linesl,'float')
     lines_matr = np.matrix(linesr,'float')
 
+    # Show all lines on image
     if lines_matl.size>1:
         for line in linesl:
             x1,y1,x2,y2 = line[0]
@@ -242,7 +260,6 @@ while True:
             if left_line_slope_check:
                 left_lines = np.logical_and(left_lines,slope>left_line_slope*(1+slope_factor))
                 left_lines = np.logical_and(left_lines,slope<left_line_slope*(1-slope_factor))
-                print 'Slope Range :: ',left_line_slope*(1+slope_factor),left_line_slope*(1-slope_factor)
             else:
                 left_lines = np.logical_and(left_lines,slope<0)
 
@@ -356,7 +373,7 @@ while True:
             lane_middle = lane_middle[-1:]
             
             # Take mean of lane middles
-            mean_lane_middle = int(np.mean(lane_middle))
+            mean_lane_middle = np.mean(lane_middle)
 
         elif any(right_lines):
             
@@ -396,7 +413,7 @@ while True:
             left_line_slope_check = False                        
             
             # Take mean of lane middles
-            mean_lane_middle = int(np.mean(lane_middle))
+            mean_lane_middle = np.mean(lane_middle)
 
         elif any(left_lines):
             
@@ -436,18 +453,16 @@ while True:
             right_line_slope_check = False
             
             # Take mean of lane middles
-            mean_lane_middle = int(np.mean(lane_middle))
+            mean_lane_middle = np.mean(lane_middle)
 
-        # Calculate Error and Error Times
-        error = np.append([error],mean_lane_middle-capture_width/2)
-        error = error[-error_mean_frames:]
+        # Calculate Error and Error Times Using EMA
+        error_current = ((mean_lane_middle-capture_width/2)-error[-1])*error_multiplier+error[-1]
+        error = np.append([error],error_current)
+        error = error[-2:]
         error_time = np.append([error_time],float(timer()))
-        error_time = error_time[-error_mean_frames:]
+        error_time = error_time[-2:]
 
-        integral_error = np.append([integral_error],np.mean(error)*(error_time[-1]-error_time[0]))
-        integral_error = integral_error[-error_frames:]
-
-        p_error = np.mean(error)
+        p_error = error[-1]
         i_error = np.mean(error)*(error_time[-1]-error_time[0])
         d_error = (error[-1]-error[0])/(error_time[-1]-error_time[0])
         
@@ -457,8 +472,6 @@ while True:
         error_text = 'P:%d I:%d D:%d S:%d' %(p_error,i_error,d_error,steps_to_take)
         cv2.putText(img,error_text,(capture_width/2-60,capture_height-4),cv2.FONT_HERSHEY_PLAIN,1,(255,255,255),1)
 
-        print 'Frame Number :: ',frame_number
-        print 'Last Error :: ',error[-1]
         print 'P :: ',p_error
         print 'I :: ',i_error
         print 'D :: ',d_error
@@ -494,7 +507,10 @@ while True:
         # Add to missed frame counter
         missed_frame_counter +=1
         
-        # Record error time to prevent I from exploding
+        # Record error and time to prevent I from exploding
+        error_current = ((mean_lane_middle-capture_width/2)-error[-1])*error_multiplier+error[-1]
+        error = np.append([error],error_current)
+        error = error[-2:]
         error_time = np.append([error_time],float(timer()))
         error_time = error_time[-2:]
 
@@ -504,7 +520,6 @@ while True:
 
     if display_image ==1:    
         # Draw lines on image for ranges
-        #CAPTURE RANGES
         cv2.line(img,(0,hood_row),(capture_width,hood_row),(0,0,255),1)
         cv2.line(img,(0,horizon_row),(capture_width,horizon_row),(0,0,255),1)
         cv2.line(img,(0,upper_frame_row),(capture_width,upper_frame_row),(0,0,255),1)
@@ -514,8 +529,8 @@ while True:
         cv2.line(img,(int(right_line_hood_range[0]),hood_row-10),(int(right_line_hood_range[0]),hood_row),(0,255,0),1)
         cv2.line(img,(int(right_line_hood_capture_range[0]),upper_frame_row),(int(right_line_hood_capture_range[0]),hood_row),(0,255,0),1)
         cv2.line(img,(int(right_line_hood_range[1]),upper_frame_row),(int(right_line_hood_range[1]),hood_row),(0,255,0),1)
-        cv2.line(img,(mean_lane_middle-upper_frame_width/2,upper_frame_row-5),(mean_lane_middle-upper_frame_width/2,upper_frame_row+5),(0,0,255),1)
-        cv2.line(img,(mean_lane_middle+upper_frame_width/2,upper_frame_row-5),(mean_lane_middle+upper_frame_width/2,upper_frame_row+5),(0,0,255),1)
+        cv2.line(img,(int(mean_lane_middle-upper_frame_width/2),upper_frame_row-5),(int(mean_lane_middle-upper_frame_width/2),upper_frame_row+5),(0,0,255),1)
+        cv2.line(img,(int(mean_lane_middle+upper_frame_width/2),upper_frame_row-5),(int(mean_lane_middle+upper_frame_width/2),upper_frame_row+5),(0,0,255),1)
         cv2.line(img,(int(hood_middle-lane_width/2),hood_row-5),(int(hood_middle-lane_width/2),hood_row+5),(0,0,255),1)
         cv2.line(img,(int(hood_middle+lane_width/2),hood_row-5),(int(hood_middle+lane_width/2),hood_row+5),(0,0,255),1)
         cv2.line(img,(horizon_range[0],horizon_row-5),(horizon_range[0],horizon_row+5),(0,0,255),1)
@@ -528,7 +543,7 @@ while True:
                 cv2.line(img,(capture_width/2,upper_frame_row),(int(p_error+capture_width/2),upper_frame_row),(255,0,0),2)
 
         # Display image, break if 'q' pressed
-##            cv2.namedWindow('Image',cv2.WINDOW_NORMAL)
+        cv2.namedWindow('Image')
         cv2.imshow('Image',img)
    
     # End timer for frame rate calculation
@@ -554,7 +569,7 @@ while True:
 
     # Start Timer for Framerate
     start = float(timer())
-##        cv2.waitKey(0)
+##        cv2.waitKey(1)
         
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break    
