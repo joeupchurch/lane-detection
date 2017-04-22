@@ -16,16 +16,16 @@ try:
         if gpio.input(gpio_switch)==0 and run == 0:
             print 'Started'
             gpio.output(gpio_enable, True)
-##            rpistr = "python /home/pi/Code/Lane_Holding/line_test.py"
-##            p=subprocess.Popen(rpistr,shell=True, preexec_fn=os.setsid)
+            rpistr = "python /home/pi/Code/Lane_Holding/lane_detection.py"
+            p=subprocess.Popen(rpistr,shell=True, preexec_fn=os.setsid)
             run = 1
             while gpio.input(gpio_switch)==0:
                 time.sleep(1)
         if gpio.input(gpio_switch)==1 and run == 1:
+            gpio.output(gpio_enable, False)
+            os.killpg(p.pid, signal.SIGTERM)
             print "Stopped"
             run = 0
-##            os.killpg(p.pid, signal.SIGTERM)
-            gpio.output(gpio_enable, False)
             while gpio.input(gpio_switch)==1:
                 time.sleep(1)
 

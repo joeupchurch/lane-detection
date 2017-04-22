@@ -10,10 +10,10 @@ import datetime
  
 # initialize the camera and grab a reference to the raw camera capture
 camera = PiCamera()
-height = 240
-width = 320
+height = 480#730#972#480
+width = 640#1296#640
 camera.resolution = (width, height)
-framerate = 32
+framerate = 60
 camera.framerate = framerate
 
 # Set Camera Settings
@@ -34,6 +34,8 @@ camera.rotation = 180
 ##camera.vflip = False
 camera.crop = (0.0, 0.0, 1.0, 1.0)
 
+##hood_row = 1/2
+
 rawCapture = PiRGBArray(camera, size=(width, height))
  
 # allow the camera to warmup
@@ -47,6 +49,7 @@ for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=
 	image = frame.array
 
 	cv2.line(image,(width/2,0),(width/2,height),(0,0,255),2)
+	cv2.line(image,(0,height*3/5),(width,height*3/5),(0,0,255),2)
  
 	# show the frame
 	cv2.imshow("Frame", image)
@@ -67,5 +70,5 @@ t = datetime.datetime.now()
 
 camera.start_recording('testVideo%d%d%d%d%d%d.h264' %(t.year,t.month,t.day,\
        t.hour,t.minute,t.second))
-time.sleep(10)
+time.sleep(30)
 camera.stop_recording()
