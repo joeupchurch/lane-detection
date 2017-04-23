@@ -13,16 +13,16 @@ import atexit
 from imutils.video.pivideostream import PiVideoStream
 from threading import Thread
 
-test_video = 0
+test_video = 1
 display_image = 1
 
 if test_video==1:
-    cap = cv2.VideoCapture('/home/pi/Code/Lane_Holding/test_videos/testVideo201732919336.h264')
-    ret, frame = cap.read()
+    cap = cv2.VideoCapture('/home/pi/Code/Lane_Holding/test_videos/testVideo201732919058.h264')
+    ret, img = cap.read()
     
     # Define camera height and width (defaults)
-    capture_height,capture_width,channels = frame.shape
-    print frame.shape
+    capture_height,capture_width,channels = img.shape
+    print img.shape
 
 else:
     # Define camera height and width (defaults)
@@ -70,8 +70,8 @@ upper_frame_range_max_width = 20*upper_frame_range_perc*capture_width
 upper_frame_mean_frames = float(10)
 upper_frame_mean_multiplier = 2/(upper_frame_mean_frames+1)
 
-lane_width_init = int(750*capture_width/640)
-upper_frame_width_init = int(85*capture_width/640)
+lane_width_init = int(730*capture_width/640)
+upper_frame_width_init = int(80*capture_width/640)
 
 min_line_length_perc = 0.5
 slope_factor = 0.025
@@ -163,10 +163,10 @@ start = timer()
 while True:
     # Grab frame differently if test video
     if test_video==1:
-        ret, frame = cap.read()
+        ret, img = cap.read()
     else:
         # Grab frame from video stream
-        frame = vs.read()
+        img = vs.read()
 
     try:
         # Index Frame Number
@@ -175,9 +175,6 @@ while True:
         if display_image==1:
             print ' '
             print 'Frame Number :: ',frame_number
-
-        # Save frame to img
-        img = frame
             
         # Calculate slopes
         left_line_slope = float(upper_frame_row-hood_row)/float(left_upper_frame_int-left_hood_int)
@@ -262,29 +259,17 @@ while True:
         grayl = cv2.cvtColor(dst_left,cv2.COLOR_BGR2GRAY)
         grayr = cv2.cvtColor(dst_right,cv2.COLOR_BGR2GRAY)
 
-        # Apply histogram equalization to gray image
-        equl = cv2.equalizeHist(grayl)
-        equr = cv2.equalizeHist(grayr)
-        
-        # Threshold for equalized image
-        retl,threshl = cv2.threshold(equl,245,255,cv2.THRESH_BINARY)
-        retr,threshr = cv2.threshold(equr,245,255,cv2.THRESH_BINARY)
-
-        # Bitwise-AND mask original image
-        resl = cv2.bitwise_and(dst_left,dst_left, mask= threshl)
-        resr = cv2.bitwise_and(dst_right,dst_right, mask= threshr)
-
         # Perform Canny Edge Detection
-        edgesl = cv2.Canny(resl,100,200,apertureSize = 3)
-        edgesr = cv2.Canny(resr,100,200,apertureSize = 3)
+        edgesl = cv2.Canny(grayl,50,100,apertureSize = 3)
+        edgesr = cv2.Canny(grayr,50,100,apertureSize = 3)
 
         # Perform Hough Line Detection
         linesl = cv2.HoughLinesP(edgesl,1,np.pi/180,\
-                int(left_transform_height*min_line_length_perc/5),\
+                int(left_transform_height*min_line_length_perc/3),\
                 minLineLength=int(left_transform_height*min_line_length_perc),\
                 maxLineGap=left_transform_height*.5)
         linesr = cv2.HoughLinesP(edgesr,1,np.pi/180,\
-            int(right_transform_height*min_line_length_perc/5),\
+            int(right_transform_height*min_line_length_perc/3),\
             minLineLength=int(right_transform_height*min_line_length_perc),\
             maxLineGap=right_transform_height*.5)
 
@@ -588,13 +573,13 @@ while True:
                 left_upper_frame_range = [int(left_upper_frame_range[0]-left_upper_frame_range_width*upper_frame_range_update_perc/2),\
                                           int(left_upper_frame_range[1]+left_upper_frame_range_width*upper_frame_range_update_perc/2)]
 
-            # Don't allow hood ranges across middle or wider than one lane width from middle
-            if right_hood_range[1]>capture_width/2*(1+hood_range_perc)+lane_width:
-                right_hood_range[1] = capture_width/2*(1+hood_range_perc)+lane_width
+            # Don't allow hood ranges across middle or wider than two lane width from middle
+            if right_hood_range[1]>capture_width/2*(1+hood_range_perc)+2*lane_width:
+                right_hood_range[1] = capture_width/2*(1+hood_range_perc)+2*lane_width
             if right_hood_range[0]<capture_width/2*(1-hood_range_perc):
                 right_hood_range[0] = capture_width/2*(1-hood_range_perc)
-            if left_hood_range[0]<capture_width/2*(1-hood_range_perc)-lane_width:
-                left_hood_range[0] = capture_width/2*(1-hood_range_perc)-lane_width
+            if left_hood_range[0]<capture_width/2*(1-hood_range_perc)-2*lane_width:
+                left_hood_range[0] = capture_width/2*(1-hood_range_perc)-2*lane_width
             if left_hood_range[1]>capture_width/2*(1+hood_range_perc):
                 left_hood_range[1]=capture_width/2*(1+hood_range_perc)
 
@@ -731,4 +716,45 @@ while True:
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break    
 
+    except:
+        # Reset variables
+        lane_width = lane_width_init
+        upper_frame_width = upper_frame_width_init
+
+        lane_middle = [capture_width/2]
+        mean_lane_middle = int(capture_width/2)
+
+        hood_middle = int(capture_width/2)
+
+        right_hood_range = [int(mean_lane_middle+lane_width/2\
+                                 -hood_range_perc/2*capture_width),\
+                                 int(mean_lane_middle+lane_width/2\
+                                 +hood_range_perc/2*capture_width)]
+        left_hood_range = [int(mean_lane_middle-lane_width/2\
+                                 -hood_range_perc/2*capture_width),\
+                                 int(mean_lane_middle-lane_width/2\
+                                 +hood_range_perc/2*capture_width)]
+
+        right_upper_frame_range = [int(mean_lane_middle+upper_frame_width/2\
+                                    -upper_frame_range_perc/2*capture_width),\
+                                    int(mean_lane_middle+upper_frame_width/2\
+                                    +upper_frame_range_perc/2*capture_width)]
+        left_upper_frame_range = [int(mean_lane_middle-upper_frame_width/2\
+                                    -upper_frame_range_perc/2*capture_width),\
+                                    int(mean_lane_middle-upper_frame_width/2\
+                                    +upper_frame_range_perc/2*capture_width)]
+
+        right_hood_int = int(mean_lane_middle+lane_width/2)
+        left_hood_int = int(mean_lane_middle-lane_width/2)
+
+        right_upper_frame_int = int(mean_lane_middle+upper_frame_width/2)
+        left_upper_frame_int = int(mean_lane_middle-upper_frame_width/2)
+
+        right_line_slope_check = False
+        left_line_slope_check = False
+
+        reset_counter = 0
+        print 'Reset Ranges!'
+        time.sleep(0.25)
+        
 atexit.register(exit_handler)
